@@ -6,7 +6,9 @@ and never touches a database.
 
 ## Scope — publish, view, and version history only
 
-- `login` — store a token locally (0600 config file, never printed)
+- `login` — fetch a JWT from the code-configured TOKEN_URL and
+  store it locally (0600 config file, never printed). Takes no
+  arguments: end users never configure the token URL.
 - `docs list`
 - `docs create <file.html> --title <title> [--summary <text>]`
 - `docs publish <id> <file.html> [--summary <text>] [--base-version <id>]`
@@ -17,12 +19,16 @@ and never touches a database.
 No comment, state, grant, or approval commands. Documents are
 plain HTML files; the CLI never writes React/JSX into them.
 
-## Configuration
+## Configuration — code, not user options
 
+- `TOKEN_URL` in `agent_docs_cli/main.py` — the JWT token URL.
+  MAINTAINER ONLY: replace this constant in code before
+  distributing the CLI. It is deliberately not a CLI option or
+  an end-user environment variable.
 - `AGENT_DOCS_API_URL` — api repo base URL.
   Default: `http://127.0.0.1:8000`
 - `AGENT_DOCS_TOKEN` — token sent as a Bearer token (overrides the
-  config file). Placeholder seam only; it is never verified here
+  config file). Dev/test override only; it is never verified here
   and never printed. The deployer wires real identity.
 - `AGENT_DOCS_CONFIG` — config file path override (tests use this).
   Default: `~/.config/agent-docs/config.json`
