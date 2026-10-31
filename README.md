@@ -15,6 +15,9 @@ and never touches a database.
   (without `--base-version`, the latest version is used as the base)
 - `docs versions <id>`
 - `docs get <id> [--version <n>] [--out <file>]`
+- `docs kv list <id>` / `docs kv get <id> <key>` /
+  `docs kv set <id> <key> <value>` / `docs kv delete <id> <key>`
+  — shared document state (document-scoped, never creates a version)
 
 No comment, state, grant, or approval commands. Documents are
 plain HTML files; the CLI never writes React/JSX into them.
