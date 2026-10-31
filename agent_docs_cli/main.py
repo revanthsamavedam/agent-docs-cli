@@ -6,9 +6,11 @@ Commands only (publish, view, version history):
 The CLI talks to the api repo over HTTP only. It never imports
 api, mcp, or ui code and never touches a database.
 
-Auth is a placeholder seam only: a token from AGENT_DOCS_TOKEN
-or from the local config file is sent as a Bearer token. It is
-never verified here and never printed. The deployer wires real
+Auth: the JWT token URL is set in code below (TOKEN_URL), NOT
+as a user-facing option or environment variable. The maintainer
+replaces TOKEN_URL in this file before distributing the CLI;
+end users just run ``login`` and never configure it, and the
+fetched token is never printed. The deployer wires real
 identity/authorization.
 """
 
@@ -25,6 +27,35 @@ import typer
 app = typer.Typer(help="agent-docs CLI: publish, view, and version history.")
 docs_app = typer.Typer(help="Document commands.")
 app.add_typer(docs_app, name="docs")
+
+# JWT token URL, set in code — not a user option, not an env var.
+# MAINTAINER: replace this value with the real token URL before
+# distributing the CLI. End users must never be asked to set it.
+# The fetch function below posts to this URL and reads the JWT
+# from the response's ``access_token`` field; adjust the request
+# body/fields here, in code, if your token URL's flow differs.
+TOKEN_URL = "REPLACE_ME_WITH_JWT_TOKEN_URL"
+
+
+def fetch_jwt_token() -> str:
+    """Fetch a JWT from the code-configured TOKEN_URL."""
+    if not TOKEN_URL or TOKEN_URL.startswith("REPLACE_ME"):
+        typer.echo(
+            "Token URL is not set in code. Replace TOKEN_URL in "
+            "agent_docs_cli/main.py before distributing this CLI.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    with httpx.Client(timeout=30, trust_env=False) as c:
+        r = c.post(TOKEN_URL)
+    if r.status_code >= 400:
+        typer.echo(f"Token fetch failed: {r.status_code}", err=True)
+        raise typer.Exit(code=1)
+    token = r.json().get("access_token")
+    if not token:
+        typer.echo("Token URL did not return an access_token.", err=True)
+        raise typer.Exit(code=1)
+    return token
 
 
 def api_base_url() -> str:
@@ -72,14 +103,9 @@ def _request(method: str, path: str, **kwargs):
 
 
 @app.command()
-def login(
-    token: str = typer.Option(
-        None, "--token", help="Token to store locally (or set AGENT_DOCS_TOKEN)."
-    ),
-):
-    """Store a token in the local config file (0600). Never printed."""
-    if token is None:
-        token = typer.prompt("Token", hide_input=True)
+def login():
+    """Fetch a JWT from the code-configured TOKEN_URL and store it locally (0600). Never printed. Takes no arguments — users never configure the URL."""
+    token = fetch_jwt_token()
     path = config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"token": token}))
