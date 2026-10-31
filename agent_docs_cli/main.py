@@ -1,7 +1,8 @@
 """agent-docs CLI (Typer).
 
-Commands only (publish, view, version history):
-  login, docs list, docs create, docs publish, docs versions, docs get
+Commands only (publish, view, version history, shared state):
+  login, docs list, docs create, docs publish, docs versions, docs get,
+  docs kv list|get|set|delete
 
 The CLI talks to the api repo over HTTP only. It never imports
 api, mcp, or ui code and never touches a database.
@@ -24,9 +25,11 @@ from pathlib import Path
 import httpx
 import typer
 
-app = typer.Typer(help="agent-docs CLI: publish, view, and version history.")
+app = typer.Typer(help="agent-docs CLI: publish, view, version history, and shared state.")
 docs_app = typer.Typer(help="Document commands.")
 app.add_typer(docs_app, name="docs")
+kv_app = typer.Typer(help="Shared document state commands.")
+docs_app.add_typer(kv_app, name="kv")
 
 # JWT token URL, set in code — not a user option, not an env var.
 # MAINTAINER: replace this value with the real token URL before
@@ -200,6 +203,39 @@ def docs_get(
         typer.echo(f"Wrote {out}")
     else:
         typer.echo(html)
+
+
+@kv_app.command("list")
+def kv_list(doc_id: str = typer.Argument(...)):
+    """List a document's shared state (all keys)."""
+    data = _request("GET", f"/v1/documents/{doc_id}/state").json()
+    for k, v in (data.get("state") or {}).items():
+        typer.echo(f"{k}\t{json.dumps(v)}")
+
+
+@kv_app.command("get")
+def kv_get(doc_id: str = typer.Argument(...), key: str = typer.Argument(...)):
+    """Get one shared-state key's value."""
+    data = _request("GET", f"/v1/documents/{doc_id}/state/{key}").json()
+    typer.echo(json.dumps(data.get("value")))
+
+
+@kv_app.command("set")
+def kv_set(doc_id: str = typer.Argument(...), key: str = typer.Argument(...), value: str = typer.Argument(...)):
+    """Set one shared-state key. Value is parsed as JSON if possible, else kept as a string."""
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        parsed = value
+    data = _request("PUT", f"/v1/documents/{doc_id}/state/{key}", json={"value": parsed}).json()
+    typer.echo(f"{key} {'deleted' if data.get('deleted') else 'set'}")
+
+
+@kv_app.command("delete")
+def kv_delete(doc_id: str = typer.Argument(...), key: str = typer.Argument(...)):
+    """Delete one shared-state key."""
+    data = _request("DELETE", f"/v1/documents/{doc_id}/state/{key}").json()
+    typer.echo(f"{key} {'deleted' if data.get('deleted') else 'not found'}")
 
 
 def main() -> None:
