@@ -1,0 +1,53 @@
+# agent-docs-cli
+
+Python (Typer) CLI for agent-docs. Separate repo — it talks to
+the api repo over HTTP and never imports api, mcp, or ui code,
+and never touches a database.
+
+## Scope — publish, view, and version history only
+
+- `login` — store a token locally (0600 config file, never printed)
+- `docs list`
+- `docs create <file.html> --title <title> [--summary <text>]`
+- `docs publish <id> <file.html> [--summary <text>] [--base-version <id>]`
+  (without `--base-version`, the latest version is used as the base)
+- `docs versions <id>`
+- `docs get <id> [--version <n>] [--out <file>]`
+
+No comment, state, grant, or approval commands. Documents are
+plain HTML files; the CLI never writes React/JSX into them.
+
+## Configuration
+
+- `AGENT_DOCS_API_URL` — api repo base URL.
+  Default: `http://127.0.0.1:8000`
+- `AGENT_DOCS_TOKEN` — token sent as a Bearer token (overrides the
+  config file). Placeholder seam only; it is never verified here
+  and never printed. The deployer wires real identity.
+- `AGENT_DOCS_CONFIG` — config file path override (tests use this).
+  Default: `~/.config/agent-docs/config.json`
+
+## Run
+
+```
+python -m venv .venv
+.venv/bin/pip install -r requirements.txt
+
+.venv/bin/python -m agent_docs_cli --help
+.venv/bin/python -m agent_docs_cli docs list
+```
+
+With the api repo running on `http://127.0.0.1:8000`:
+
+```
+.venv/bin/python -m agent_docs_cli docs create report.html --title "Q3 report"
+.venv/bin/python -m agent_docs_cli docs publish <id> report-v2.html --summary "Update"
+.venv/bin/python -m agent_docs_cli docs versions <id>
+.venv/bin/python -m agent_docs_cli docs get <id> --version 1 --out report-v1.html
+```
+
+## Tests
+
+```
+.venv/bin/python -m pytest -q
+```

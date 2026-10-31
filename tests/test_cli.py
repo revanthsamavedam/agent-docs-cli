@@ -1,0 +1,53 @@
+"""CLI tests: help for every command, plus a mocked-HTTP round trip."""
+
+import json
+
+from typer.testing import CliRunner
+
+from agent_docs_cli.main import app
+
+runner = CliRunner()
+
+
+def test_help_for_every_command():
+    for args in [
+        ["--help"],
+        ["docs", "--help"],
+        ["login", "--help"],
+        ["docs", "list", "--help"],
+        ["docs", "create", "--help"],
+        ["docs", "publish", "--help"],
+        ["docs", "versions", "--help"],
+        ["docs", "get", "--help"],
+    ]:
+        r = runner.invoke(app, args)
+        assert r.exit_code == 0, (args, r.output)
+
+
+def test_login_stores_token_without_printing_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("AGENT_DOCS_CONFIG", str(tmp_path / "config.json"))
+    secret = "EXAMPLE_TOKEN_FOR_TESTS_ONLY"
+    r = runner.invoke(app, ["login", "--token", secret])
+    assert r.exit_code == 0, r.output
+    assert secret not in r.output
+    assert json.loads((tmp_path / "config.json").read_text())["token"] == secret
+
+
+def test_docs_list_with_mocked_http(monkeypatch):
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def fake_request(method, path, **kwargs):
+        assert method == "GET" and path == "/v1/documents"
+        return FakeResponse(
+            {"documents": [{"id": "doc_abc", "title": "Demo", "latest_version": 2}]}
+        )
+
+    monkeypatch.setattr("agent_docs_cli.main._request", fake_request)
+    r = runner.invoke(app, ["docs", "list"])
+    assert r.exit_code == 0, r.output
+    assert "doc_abc" in r.output and "Demo" in r.output
