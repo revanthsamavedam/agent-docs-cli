@@ -246,17 +246,25 @@ def apis_register(
     api_url: str = typer.Option(..., "--api-url"),
     token_url: str = typer.Option(..., "--token-url"),
     scope: str = typer.Option("", "--scope"),
+    app: str = typer.Option(None, "--app"),
+    swagger_url: str = typer.Option(None, "--swagger-url"),
 ):
-    """Register an internal API (name, base URL, per-endpoint token URL). Stores URLs only, never tokens."""
-    data = _request("POST", "/v1/apis", json={"name": name, "api_url": api_url, "token_url": token_url, "scope": scope}).json()
+    """Register an internal API (app short name, base URL, per-endpoint token URL, Swagger doc URL). Stores URLs only, never tokens."""
+    payload = {"name": name, "api_url": api_url, "token_url": token_url, "scope": scope}
+    if app:
+        payload["app"] = app
+    if swagger_url:
+        payload["swagger_url"] = swagger_url
+    data = _request("POST", "/v1/apis", json=payload).json()
     a = data["api"]
     typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}")
 
 
 @apis_app.command("list")
-def apis_list():
-    """List registered internal APIs."""
-    for a in _request("GET", "/v1/apis").json().get("apis", []):
+def apis_list(app: str = typer.Option(None, "--app")):
+    """List registered internal APIs (optionally for one app)."""
+    path = f"/v1/apis?app={app}" if app else "/v1/apis"
+    for a in _request("GET", path).json().get("apis", []):
         typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}")
 
 
@@ -267,15 +275,39 @@ def apis_get(name: str = typer.Argument(...)):
     typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}\t{a.get('scope', '')}")
 
 
+@apis_app.command("sync")
+def apis_sync(
+    app: str = typer.Option(..., "--app"),
+    swagger_url: str = typer.Option(None, "--swagger-url"),
+):
+    """Fetch the latest Swagger doc for an app and update its registry entry.
+
+    With --swagger-url, that URL is stored in the app config; without
+    it, the stored swagger_url is used, so a later sync needs no URL:
+    `apis sync --app refdp`.
+    """
+    payload = {}
+    if swagger_url:
+        payload["swagger_url"] = swagger_url
+    data = _request("POST", f"/v1/apis/{app}/sync", json=payload).json()
+    a = data["api"]
+    typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}")
+    typer.echo(f"swagger: {data['swagger_url']}")
+    typer.echo(f"added: {', '.join(data['added_endpoints']) or '(none)'}")
+    typer.echo(f"removed (reported, not deleted): {', '.join(data['removed_endpoints']) or '(none)'}")
+    typer.echo(f"unchanged: {', '.join(data['unchanged_endpoints']) or '(none)'}")
+
+
 @apis_app.command("update")
 def apis_update(
     name: str = typer.Argument(...),
     api_url: str = typer.Option(None, "--api-url"),
     token_url: str = typer.Option(None, "--token-url"),
     scope: str = typer.Option(None, "--scope"),
+    swagger_url: str = typer.Option(None, "--swagger-url"),
 ):
     """Update a registered API's URLs (rotating a token URL needs no document republishing)."""
-    payload = {k: v for k, v in {"api_url": api_url, "token_url": token_url, "scope": scope}.items() if v is not None}
+    payload = {k: v for k, v in {"api_url": api_url, "token_url": token_url, "scope": scope, "swagger_url": swagger_url}.items() if v is not None}
     a = _request("PUT", f"/v1/apis/{name}", json=payload).json()["api"]
     typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}")
 
