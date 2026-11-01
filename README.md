@@ -18,6 +18,14 @@ and never touches a database.
 - `docs kv list <id>` / `docs kv get <id> <key>` /
   `docs kv set <id> <key> <value>` / `docs kv delete <id> <key>`
   — shared document state (document-scoped, never creates a version)
+- `docs draft create <file.html> --title <title>` /
+  `docs draft save <id> <file.html>` /
+  `docs draft get <id> [--out <file>]` /
+  `docs draft publish <id> [--summary <text>]` /
+  `docs draft discard <id>`
+  — drafts: test on the actual viewer link (`?doc=<id>&draft=1`)
+  before publishing. A draft is never a version; `docs list`
+  shows "draft only" and a "· draft" marker.
 - `apis register --name <name> --api-url <url> --token-url <url> [--scope <scope>] [--app <app>] [--swagger-url <url>]`
   / `apis list [--app <app>]` / `apis get <name>` / `apis update <name> [--token-url <url>]`
   / `apis remove <name>` / `apis import <file.json>`

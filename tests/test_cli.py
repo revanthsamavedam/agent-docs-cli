@@ -22,6 +22,12 @@ def test_help_for_every_command():
         ["docs", "kv", "--help"],
         ["docs", "kv", "list", "--help"],
         ["docs", "kv", "set", "--help"],
+        ["docs", "draft", "--help"],
+        ["docs", "draft", "create", "--help"],
+        ["docs", "draft", "save", "--help"],
+        ["docs", "draft", "get", "--help"],
+        ["docs", "draft", "publish", "--help"],
+        ["docs", "draft", "discard", "--help"],
         ["apis", "--help"],
         ["apis", "register", "--help"],
         ["apis", "list", "--help"],
@@ -70,3 +76,40 @@ def test_docs_list_with_mocked_http(monkeypatch):
     r = runner.invoke(app, ["docs", "list"])
     assert r.exit_code == 0, r.output
     assert "doc_abc" in r.output and "Demo" in r.output
+
+
+def test_docs_draft_commands_with_mocked_http(tmp_path, monkeypatch):
+    """Draft create -> get -> publish, against a mocked API."""
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, payload=None, text=""):
+            self._payload = payload or {}
+            self.text = text
+
+        def json(self):
+            return self._payload
+
+    def fake_request(method, path, **kwargs):
+        calls.append((method, path, kwargs.get("json")))
+        if method == "POST" and path == "/v1/documents":
+            assert kwargs["json"]["draft"] is True
+            return FakeResponse({"id": "doc_draft", "title": "Draft", "draft": True, "version": None})
+        if method == "GET" and path == "/v1/documents/doc_draft/draft":
+            return FakeResponse({"id": "doc_draft", "draft": True, "html": "<html>draft</html>"})
+        if method == "POST" and path == "/v1/documents/doc_draft/draft/publish":
+            return FakeResponse({"version": {"id": "ver_1", "number": 1, "sha256": "a" * 64}})
+        raise AssertionError((method, path))
+
+    monkeypatch.setattr("agent_docs_cli.main._request", fake_request)
+    page = tmp_path / "page.html"
+    page.write_text("<html>draft</html>")
+    r = runner.invoke(app, ["docs", "draft", "create", str(page), "--title", "Draft"])
+    assert r.exit_code == 0, r.output
+    assert "doc_draft" in r.output and "draft=1" in r.output
+    r = runner.invoke(app, ["docs", "draft", "get", "doc_draft"])
+    assert r.exit_code == 0 and "<html>draft</html>" in r.output
+    r = runner.invoke(app, ["docs", "draft", "publish", "doc_draft", "--summary", "from draft"])
+    assert r.exit_code == 0, r.output
+    assert "version 1" in r.output
+    assert ("POST", "/v1/documents/doc_draft/draft/publish", {"change_summary": "from draft"}) in calls

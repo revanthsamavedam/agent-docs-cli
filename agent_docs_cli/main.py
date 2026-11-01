@@ -1,8 +1,9 @@
 """agent-docs CLI (Typer).
 
-Commands only (publish, view, version history, shared state):
+Commands only (publish, view, version history, shared state, drafts):
   login, docs list, docs create, docs publish, docs versions, docs get,
-  docs kv list|get|set|delete
+  docs kv list|get|set|delete,
+  docs draft create|save|get|publish|discard
 
 The CLI talks to the api repo over HTTP only. It never imports
 api, mcp, or ui code and never touches a database.
@@ -30,6 +31,8 @@ docs_app = typer.Typer(help="Document commands.")
 app.add_typer(docs_app, name="docs")
 kv_app = typer.Typer(help="Shared document state commands.")
 docs_app.add_typer(kv_app, name="kv")
+draft_app = typer.Typer(help="Draft commands: test on the actual viewer link before publishing.")
+docs_app.add_typer(draft_app, name="draft")
 apis_app = typer.Typer(help="Registered internal API commands.")
 app.add_typer(apis_app, name="apis")
 
@@ -123,7 +126,11 @@ def docs_list():
     """List documents."""
     data = _request("GET", "/v1/documents").json()
     for d in data.get("documents", []):
-        typer.echo(f"{d['id']}\t{d['title']}\tlatest v{d.get('latest_version')}")
+        latest = d.get("latest_version")
+        status = f"latest v{latest}" if latest else "draft only"
+        if d.get("has_draft"):
+            status += " · draft"
+        typer.echo(f"{d['id']}\t{d['title']}\t{status}")
 
 
 @docs_app.command("create")
@@ -205,6 +212,65 @@ def docs_get(
         typer.echo(f"Wrote {out}")
     else:
         typer.echo(html)
+
+
+@draft_app.command("create")
+def draft_create(
+    file: Path = typer.Argument(..., help="Plain HTML file to save as a draft."),
+    title: str = typer.Option(..., "--title", help="Document title."),
+):
+    """Create a draft-only document from an HTML file (no version yet).
+
+    View it on the actual viewer link (?doc=<id>&draft=1), then
+    `docs draft publish` when it looks right. A draft is validated
+    like a publish; a rejected draft stores nothing.
+    """
+    html = file.read_text(encoding="utf-8")
+    data = _request("POST", "/v1/documents", json={"title": title, "html": html, "draft": True}).json()
+    typer.echo(f"{data['id']}  draft (no version yet) — view at ?doc={data['id']}&draft=1")
+
+
+@draft_app.command("save")
+def draft_save(
+    doc_id: str = typer.Argument(...),
+    file: Path = typer.Argument(..., help="Plain HTML file to save as the draft."),
+):
+    """Save/replace a document's draft. Creates no version and touches no published version."""
+    html = file.read_text(encoding="utf-8")
+    _request("PUT", f"/v1/documents/{doc_id}/draft", json={"html": html})
+    typer.echo(f"draft saved for {doc_id} — view at ?doc={doc_id}&draft=1")
+
+
+@draft_app.command("get")
+def draft_get(
+    doc_id: str = typer.Argument(...),
+    out: Path = typer.Option(None, "--out", help="File to write the draft HTML to."),
+):
+    """Fetch a document's draft HTML."""
+    html = _request("GET", f"/v1/documents/{doc_id}/draft").json()["html"]
+    if out is not None:
+        out.write_text(html, encoding="utf-8")
+        typer.echo(f"Wrote {out}")
+    else:
+        typer.echo(html)
+
+
+@draft_app.command("publish")
+def draft_publish(
+    doc_id: str = typer.Argument(...),
+    summary: str = typer.Option("", "--summary", help="Change summary."),
+):
+    """Publish a document's draft as the next version; clears the draft."""
+    data = _request("POST", f"/v1/documents/{doc_id}/draft/publish", json={"change_summary": summary}).json()
+    v = data["version"]
+    typer.echo(f"{v['id']}  version {v['number']}  {v['sha256']}")
+
+
+@draft_app.command("discard")
+def draft_discard(doc_id: str = typer.Argument(...)):
+    """Discard a document's draft (published versions are untouched)."""
+    data = _request("DELETE", f"/v1/documents/{doc_id}/draft").json()
+    typer.echo(f"draft {'discarded' if data.get('deleted') else 'not found'} for {doc_id}")
 
 
 @kv_app.command("list")
