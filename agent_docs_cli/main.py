@@ -30,6 +30,8 @@ docs_app = typer.Typer(help="Document commands.")
 app.add_typer(docs_app, name="docs")
 kv_app = typer.Typer(help="Shared document state commands.")
 docs_app.add_typer(kv_app, name="kv")
+apis_app = typer.Typer(help="Registered internal API commands.")
+app.add_typer(apis_app, name="apis")
 
 # JWT token URL, set in code — not a user option, not an env var.
 # MAINTAINER: replace this value with the real token URL before
@@ -236,6 +238,62 @@ def kv_delete(doc_id: str = typer.Argument(...), key: str = typer.Argument(...))
     """Delete one shared-state key."""
     data = _request("DELETE", f"/v1/documents/{doc_id}/state/{key}").json()
     typer.echo(f"{key} {'deleted' if data.get('deleted') else 'not found'}")
+
+
+@apis_app.command("register")
+def apis_register(
+    name: str = typer.Option(..., "--name"),
+    api_url: str = typer.Option(..., "--api-url"),
+    token_url: str = typer.Option(..., "--token-url"),
+    scope: str = typer.Option("", "--scope"),
+):
+    """Register an internal API (name, base URL, per-endpoint token URL). Stores URLs only, never tokens."""
+    data = _request("POST", "/v1/apis", json={"name": name, "api_url": api_url, "token_url": token_url, "scope": scope}).json()
+    a = data["api"]
+    typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}")
+
+
+@apis_app.command("list")
+def apis_list():
+    """List registered internal APIs."""
+    for a in _request("GET", "/v1/apis").json().get("apis", []):
+        typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}")
+
+
+@apis_app.command("get")
+def apis_get(name: str = typer.Argument(...)):
+    """Get one registered internal API."""
+    a = _request("GET", f"/v1/apis/{name}").json()["api"]
+    typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}\t{a.get('scope', '')}")
+
+
+@apis_app.command("update")
+def apis_update(
+    name: str = typer.Argument(...),
+    api_url: str = typer.Option(None, "--api-url"),
+    token_url: str = typer.Option(None, "--token-url"),
+    scope: str = typer.Option(None, "--scope"),
+):
+    """Update a registered API's URLs (rotating a token URL needs no document republishing)."""
+    payload = {k: v for k, v in {"api_url": api_url, "token_url": token_url, "scope": scope}.items() if v is not None}
+    a = _request("PUT", f"/v1/apis/{name}", json=payload).json()["api"]
+    typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}")
+
+
+@apis_app.command("remove")
+def apis_remove(name: str = typer.Argument(...)):
+    """Remove a registered internal API."""
+    data = _request("DELETE", f"/v1/apis/{name}").json()
+    typer.echo(f"{name} {'removed' if data.get('deleted') else 'not found'}")
+
+
+@apis_app.command("import")
+def apis_import(file: Path = typer.Argument(..., help="JSON file: a list of {name, api_url, token_url, scope?} objects.")):
+    """Register many internal APIs from a JSON file."""
+    entries = json.loads(file.read_text(encoding="utf-8"))
+    for entry in entries:
+        data = _request("POST", "/v1/apis", json=entry).json()
+        typer.echo(f"registered {data['api']['name']}")
 
 
 def main() -> None:
