@@ -18,11 +18,15 @@ and never touches a database.
 - `docs kv list <id>` / `docs kv get <id> <key>` /
   `docs kv set <id> <key> <value>` / `docs kv delete <id> <key>`
   — shared document state (document-scoped, never creates a version)
-- `apis register --name <name> --api-url <url> --token-url <url> [--scope <scope>]`
-  / `apis list` / `apis get <name>` / `apis update <name> [--token-url <url>]`
+- `apis register --name <name> --api-url <url> --token-url <url> [--scope <scope>] [--app <app>] [--swagger-url <url>]`
+  / `apis list [--app <app>]` / `apis get <name>` / `apis update <name> [--token-url <url>]`
   / `apis remove <name>` / `apis import <file.json>`
+  / `apis sync --app <app> [--swagger-url <url>]`
   — register internal APIs once for documents to use at view time;
-  stores URLs only, never tokens
+  stores URLs only, never tokens. `sync` fetches the latest
+  Swagger doc for an app and updates its registry entry; with
+  `--swagger-url` that URL is stored in the app config, without
+  it the stored URL is used, so later syncs need no URL.
 
 No comment, state, grant, or approval commands. Documents are
 plain HTML files; the CLI never writes React/JSX into them.
