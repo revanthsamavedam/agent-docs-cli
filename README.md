@@ -18,6 +18,11 @@ and never touches a database.
 - `docs kv list <id>` / `docs kv get <id> <key>` /
   `docs kv set <id> <key> <value>` / `docs kv delete <id> <key>`
   — shared document state (document-scoped, never creates a version)
+- `apis register --name <name> --api-url <url> --token-url <url> [--scope <scope>]`
+  / `apis list` / `apis get <name>` / `apis update <name> [--token-url <url>]`
+  / `apis remove <name>` / `apis import <file.json>`
+  — register internal APIs once for documents to use at view time;
+  stores URLs only, never tokens
 
 No comment, state, grant, or approval commands. Documents are
 plain HTML files; the CLI never writes React/JSX into them.

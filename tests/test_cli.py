@@ -22,6 +22,10 @@ def test_help_for_every_command():
         ["docs", "kv", "--help"],
         ["docs", "kv", "list", "--help"],
         ["docs", "kv", "set", "--help"],
+        ["apis", "--help"],
+        ["apis", "register", "--help"],
+        ["apis", "list", "--help"],
+        ["apis", "import", "--help"],
     ]:
         r = runner.invoke(app, args)
         assert r.exit_code == 0, (args, r.output)
