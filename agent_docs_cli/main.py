@@ -1,12 +1,19 @@
 """agent-docs CLI (Typer).
 
-Commands only (publish, view, version history, shared state, drafts):
+Commands only (publish, view, version history, shared state,
+registered APIs):
   login, docs list, docs create, docs publish, docs versions, docs get,
   docs kv list|get|set|delete,
-  docs draft create|save|get|publish|discard
+  apis register|list|get|update|remove|import|sync
 
 The CLI talks to the api repo over HTTP only. It never imports
 api, mcp, or ui code and never touches a database.
+
+Publishing appends the next version: the API computes
+max(version_no)+1 itself, so publish sends only {html} — no base
+version, no change summary, no conflict handling. Versions are
+addressed by NUMBER, never by id: an unknown number is a 404
+from the API, surfaced as-is, never a silent fall back to latest.
 
 Auth: the JWT token URL is set in code below (TOKEN_URL), NOT
 as a user-facing option or environment variable. The maintainer
@@ -31,8 +38,6 @@ docs_app = typer.Typer(help="Document commands.")
 app.add_typer(docs_app, name="docs")
 kv_app = typer.Typer(help="Shared document state commands.")
 docs_app.add_typer(kv_app, name="kv")
-draft_app = typer.Typer(help="Draft commands: test on the actual viewer link before publishing.")
-docs_app.add_typer(draft_app, name="draft")
 apis_app = typer.Typer(help="Registered internal API commands.")
 app.add_typer(apis_app, name="apis")
 
@@ -101,6 +106,8 @@ def _request(method: str, path: str, **kwargs):
     trust_env=False: the API URL is configured and internal/local,
     so it must not be routed through an ambient HTTP proxy, and
     bracketed IPv6 entries in no_proxy break httpx's proxy parsing.
+    An API error (>=400) is echoed and exits: a 404 for an unknown
+    version number is surfaced, never a silent fall back to latest.
     """
     with httpx.Client(base_url=api_base_url(), headers=_headers(), timeout=30, trust_env=False) as c:
         r = c.request(method, path, **kwargs)
@@ -127,9 +134,7 @@ def docs_list():
     data = _request("GET", "/v1/documents").json()
     for d in data.get("documents", []):
         latest = d.get("latest_version")
-        status = f"latest v{latest}" if latest else "draft only"
-        if d.get("has_draft"):
-            status += " · draft"
+        status = f"latest v{latest}" if latest is not None else "no versions yet"
         typer.echo(f"{d['id']}\t{d['title']}\t{status}")
 
 
@@ -137,13 +142,12 @@ def docs_list():
 def docs_create(
     file: Path = typer.Argument(..., help="Plain HTML file to publish."),
     title: str = typer.Option(..., "--title", help="Document title."),
-    summary: str = typer.Option("", "--summary", help="Change summary for v1."),
 ):
     """Create a document from an HTML file (stores version 1)."""
     html = file.read_text(encoding="utf-8")
     data = _request(
         "POST", "/v1/documents",
-        json={"title": title, "html": html, "change_summary": summary},
+        json={"title": title, "html": html},
     ).json()
     typer.echo(f"{data['id']}  version {data['version']['number']}  {data['version']['sha256']}")
 
@@ -152,30 +156,19 @@ def docs_create(
 def docs_publish(
     doc_id: str = typer.Argument(...),
     file: Path = typer.Argument(..., help="Plain HTML file to publish."),
-    summary: str = typer.Option("", "--summary", help="Change summary."),
-    base_version: str = typer.Option(
-        None, "--base-version",
-        help="Base version id. Defaults to the latest version.",
-    ),
 ):
-    """Publish a new immutable version of a document."""
+    """Publish a new immutable version of a document.
+
+    The API appends the next version number itself; this command
+    sends only the HTML.
+    """
     html = file.read_text(encoding="utf-8")
-    if base_version is None:
-        versions = _request("GET", f"/v1/documents/{doc_id}/versions").json()["versions"]
-        if not versions:
-            typer.echo("Document has no versions.", err=True)
-            raise typer.Exit(code=1)
-        base_version = versions[-1]["id"]
     data = _request(
         "POST", f"/v1/documents/{doc_id}/versions",
-        json={
-            "html": html,
-            "base_version_id": base_version,
-            "change_summary": summary,
-        },
+        json={"html": html},
     ).json()
     v = data["version"]
-    typer.echo(f"{v['id']}  version {v['number']}  {v['sha256']}")
+    typer.echo(f"version {v['number']}  {v['sha256']}")
 
 
 @docs_app.command("versions")
@@ -184,7 +177,7 @@ def docs_versions(doc_id: str = typer.Argument(...)):
     data = _request("GET", f"/v1/documents/{doc_id}/versions").json()
     for v in data.get("versions", []):
         typer.echo(
-            f"v{v['number']}\t{v['id']}\t{v['sha256']}\t{v['change_summary']}"
+            f"v{v['number']}\t{v['sha256']}\t{v.get('s3_key', '')}\t{v.get('created_at', '')}"
         )
 
 
@@ -194,83 +187,31 @@ def docs_get(
     version: int = typer.Option(None, "--version", help="Version number; defaults to latest."),
     out: Path = typer.Option(None, "--out", help="File to write the HTML to."),
 ):
-    """Fetch a version's raw HTML (byte-identical to what was published)."""
-    versions = _request("GET", f"/v1/documents/{doc_id}/versions").json()["versions"]
-    if version is None:
-        chosen = versions[-1]
-    else:
-        matches = [v for v in versions if v["number"] == version]
-        if not matches:
-            typer.echo(f"No version {version}.", err=True)
-            raise typer.Exit(code=1)
-        chosen = matches[0]
-    html = _request(
-        "GET", f"/v1/documents/{doc_id}/versions/{chosen['id']}/html"
-    ).text
-    if out is not None:
-        out.write_text(html, encoding="utf-8")
-        typer.echo(f"Wrote {out}")
-    else:
-        typer.echo(html)
+    """Fetch a version's raw HTML (byte-identical to what was published).
 
-
-@draft_app.command("create")
-def draft_create(
-    file: Path = typer.Argument(..., help="Plain HTML file to save as a draft."),
-    title: str = typer.Option(..., "--title", help="Document title."),
-):
-    """Create a draft-only document from an HTML file (no version yet).
-
-    View it on the actual viewer link (?doc=<id>&draft=1), then
-    `docs draft publish` when it looks right. A draft is validated
-    like a publish; a rejected draft stores nothing.
+    An explicit --version is fetched directly: an unknown number
+    is a 404 from the API, surfaced as-is, never a fall back to
+    latest. Without --version, the highest listed version number
+    is fetched.
     """
-    html = file.read_text(encoding="utf-8")
-    data = _request("POST", "/v1/documents", json={"title": title, "html": html, "draft": True}).json()
-    typer.echo(f"{data['id']}  draft (no version yet) — view at ?doc={data['id']}&draft=1")
-
-
-@draft_app.command("save")
-def draft_save(
-    doc_id: str = typer.Argument(...),
-    file: Path = typer.Argument(..., help="Plain HTML file to save as the draft."),
-):
-    """Save/replace a document's draft. Creates no version and touches no published version."""
-    html = file.read_text(encoding="utf-8")
-    _request("PUT", f"/v1/documents/{doc_id}/draft", json={"html": html})
-    typer.echo(f"draft saved for {doc_id} — view at ?doc={doc_id}&draft=1")
-
-
-@draft_app.command("get")
-def draft_get(
-    doc_id: str = typer.Argument(...),
-    out: Path = typer.Option(None, "--out", help="File to write the draft HTML to."),
-):
-    """Fetch a document's draft HTML."""
-    html = _request("GET", f"/v1/documents/{doc_id}/draft").json()["html"]
+    if version is not None:
+        html = _request(
+            "GET", f"/v1/documents/{doc_id}/versions/{version}/html"
+        ).text
+    else:
+        versions = _request("GET", f"/v1/documents/{doc_id}/versions").json()["versions"]
+        if not versions:
+            typer.echo("Document has no versions.", err=True)
+            raise typer.Exit(code=1)
+        latest = max(v["number"] for v in versions)
+        html = _request(
+            "GET", f"/v1/documents/{doc_id}/versions/{latest}/html"
+        ).text
     if out is not None:
         out.write_text(html, encoding="utf-8")
         typer.echo(f"Wrote {out}")
     else:
         typer.echo(html)
-
-
-@draft_app.command("publish")
-def draft_publish(
-    doc_id: str = typer.Argument(...),
-    summary: str = typer.Option("", "--summary", help="Change summary."),
-):
-    """Publish a document's draft as the next version; clears the draft."""
-    data = _request("POST", f"/v1/documents/{doc_id}/draft/publish", json={"change_summary": summary}).json()
-    v = data["version"]
-    typer.echo(f"{v['id']}  version {v['number']}  {v['sha256']}")
-
-
-@draft_app.command("discard")
-def draft_discard(doc_id: str = typer.Argument(...)):
-    """Discard a document's draft (published versions are untouched)."""
-    data = _request("DELETE", f"/v1/documents/{doc_id}/draft").json()
-    typer.echo(f"draft {'discarded' if data.get('deleted') else 'not found'} for {doc_id}")
 
 
 @kv_app.command("list")
@@ -306,58 +247,61 @@ def kv_delete(doc_id: str = typer.Argument(...), key: str = typer.Argument(...))
     typer.echo(f"{key} {'deleted' if data.get('deleted') else 'not found'}")
 
 
+def _api_line(a: dict) -> str:
+    return f"{a['app_name']}\t{a['base_url']}\t{a.get('token_url') or '(none)'}"
+
+
 @apis_app.command("register")
 def apis_register(
-    name: str = typer.Option(..., "--name"),
-    api_url: str = typer.Option(..., "--api-url"),
-    token_url: str = typer.Option(..., "--token-url"),
-    scope: str = typer.Option("", "--scope"),
-    app: str = typer.Option(None, "--app"),
+    app_name: str = typer.Option(..., "--app-name"),
+    base_url: str = typer.Option(..., "--base-url"),
+    token_url: str = typer.Option(None, "--token-url"),
     swagger_url: str = typer.Option(None, "--swagger-url"),
 ):
-    """Register an internal API (app short name, base URL, per-endpoint token URL, Swagger doc URL). Stores URLs only, never tokens."""
-    payload = {"name": name, "api_url": api_url, "token_url": token_url, "scope": scope}
-    if app:
-        payload["app"] = app
-    if swagger_url:
+    """Register an internal API (app short name, base URL, optional per-endpoint token URL, optional Swagger doc URL). Stores URLs only, never tokens. A missing token URL means no token fetch (apiKey/bearer schemes)."""
+    payload = {"app_name": app_name, "base_url": base_url}
+    if token_url is not None:
+        payload["token_url"] = token_url
+    if swagger_url is not None:
         payload["swagger_url"] = swagger_url
     data = _request("POST", "/v1/apis", json=payload).json()
-    a = data["api"]
-    typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}")
+    typer.echo(_api_line(data["api"]))
 
 
 @apis_app.command("list")
-def apis_list(app: str = typer.Option(None, "--app")):
-    """List registered internal APIs (optionally for one app)."""
-    path = f"/v1/apis?app={app}" if app else "/v1/apis"
+def apis_list(user_id: str = typer.Option(None, "--user-id")):
+    """List registered internal APIs, optionally filtered by registering user id (audit lookup only, never access control)."""
+    path = f"/v1/apis?user_id={user_id}" if user_id else "/v1/apis"
     for a in _request("GET", path).json().get("apis", []):
-        typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}")
+        typer.echo(_api_line(a))
 
 
 @apis_app.command("get")
-def apis_get(name: str = typer.Argument(...)):
+def apis_get(app_name: str = typer.Argument(...)):
     """Get one registered internal API."""
-    a = _request("GET", f"/v1/apis/{name}").json()["api"]
-    typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}\t{a.get('scope', '')}")
+    a = _request("GET", f"/v1/apis/{app_name}").json()["api"]
+    typer.echo(f"{a['app_name']}\t{a['base_url']}\t{a.get('token_url') or '(none)'}\t{a.get('swagger_url') or ''}")
 
 
 @apis_app.command("sync")
 def apis_sync(
-    app: str = typer.Option(..., "--app"),
+    app_name: str = typer.Option(..., "--app-name"),
     swagger_url: str = typer.Option(None, "--swagger-url"),
 ):
     """Fetch the latest Swagger doc for an app and update its registry entry.
 
     With --swagger-url, that URL is stored in the app config; without
     it, the stored swagger_url is used, so a later sync needs no URL:
-    `apis sync --app refdp`.
+    `apis sync --app-name refdp`. Base URL comes from servers[0].url,
+    token URL from the Swagger oauth2 tokenUrl if present, else the
+    existing token URL is kept. Removed endpoints are reported,
+    never auto-deleted.
     """
     payload = {}
     if swagger_url:
         payload["swagger_url"] = swagger_url
-    data = _request("POST", f"/v1/apis/{app}/sync", json=payload).json()
-    a = data["api"]
-    typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}")
+    data = _request("POST", f"/v1/apis/{app_name}/sync", json=payload).json()
+    typer.echo(_api_line(data["api"]))
     typer.echo(f"swagger: {data['swagger_url']}")
     typer.echo(f"added: {', '.join(data['added_endpoints']) or '(none)'}")
     typer.echo(f"removed (reported, not deleted): {', '.join(data['removed_endpoints']) or '(none)'}")
@@ -366,32 +310,31 @@ def apis_sync(
 
 @apis_app.command("update")
 def apis_update(
-    name: str = typer.Argument(...),
-    api_url: str = typer.Option(None, "--api-url"),
+    app_name: str = typer.Argument(...),
+    base_url: str = typer.Option(None, "--base-url"),
     token_url: str = typer.Option(None, "--token-url"),
-    scope: str = typer.Option(None, "--scope"),
     swagger_url: str = typer.Option(None, "--swagger-url"),
 ):
-    """Update a registered API's URLs (rotating a token URL needs no document republishing)."""
-    payload = {k: v for k, v in {"api_url": api_url, "token_url": token_url, "scope": scope, "swagger_url": swagger_url}.items() if v is not None}
-    a = _request("PUT", f"/v1/apis/{name}", json=payload).json()["api"]
-    typer.echo(f"{a['name']}\t{a['api_url']}\t{a['token_url']}")
+    """Update a registered API's URLs (rotating a token URL needs no document republishing). Only options given are sent; omitted fields are kept."""
+    payload = {k: v for k, v in {"base_url": base_url, "token_url": token_url, "swagger_url": swagger_url}.items() if v is not None}
+    a = _request("PUT", f"/v1/apis/{app_name}", json=payload).json()["api"]
+    typer.echo(_api_line(a))
 
 
 @apis_app.command("remove")
-def apis_remove(name: str = typer.Argument(...)):
+def apis_remove(app_name: str = typer.Argument(...)):
     """Remove a registered internal API."""
-    data = _request("DELETE", f"/v1/apis/{name}").json()
-    typer.echo(f"{name} {'removed' if data.get('deleted') else 'not found'}")
+    data = _request("DELETE", f"/v1/apis/{app_name}").json()
+    typer.echo(f"{app_name} {'removed' if data.get('deleted') else 'not found'}")
 
 
 @apis_app.command("import")
-def apis_import(file: Path = typer.Argument(..., help="JSON file: a list of {name, api_url, token_url, scope?} objects.")):
+def apis_import(file: Path = typer.Argument(..., help="JSON file: a list of {app_name, base_url, token_url?, swagger_url?} objects.")):
     """Register many internal APIs from a JSON file."""
     entries = json.loads(file.read_text(encoding="utf-8"))
     for entry in entries:
         data = _request("POST", "/v1/apis", json=entry).json()
-        typer.echo(f"registered {data['api']['name']}")
+        typer.echo(f"registered {data['api']['app_name']}")
 
 
 def main() -> None:
